@@ -43,7 +43,7 @@ try {
     $WazuhInstalled = Test-InstalledSoftware -DisplayName 'Wazuh Agent'
 
     Write-Log "DX CyberProtect installed: $DxInstalled"
-    Write-Log "Wazuh Agent installed: $WazuhInstalled"
+    Write-Log "Shield Agent installed: $WazuhInstalled"
 
     if (-not $DxInstalled) {
         Write-Log 'DX CyberProtect is missing. Downloading MSI.'
@@ -58,7 +58,7 @@ try {
     }
 
     if (-not $WazuhInstalled) {
-        Write-Log 'Wazuh Agent is missing. Downloading install-agent.ps1.'
+        Write-Log 'Shield Agent is missing. Downloading install-agent.ps1.'
         Invoke-WebRequest -UseBasicParsing -Uri $InstallScriptUrl -OutFile $InstallScriptPath
 
         Write-Log 'Running install-agent.ps1.'
@@ -66,7 +66,7 @@ try {
         Write-Log "install-agent.ps1 exit code: $($ps.ExitCode)"
     }
     else {
-        Write-Log 'Wazuh Agent already installed. Skipping install-agent.ps1.'
+        Write-Log 'Shield Agent already installed. Skipping install-agent.ps1.'
     }
 
     Write-Log 'Cleaning up downloaded files.'
