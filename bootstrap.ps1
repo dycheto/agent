@@ -7,17 +7,16 @@ $LogFile  = Join-Path $TempPath 'deploy.log'
 # --- Adobe Reader Extension target release ---
 $TargetVer = '1.0.5'
 $MsiUrl = "https://raw.githubusercontent.com/dycheto/agent/main/adobeextension_v$TargetVer.msi"
-$MsiPath = Join-Path $TempPath "adobeextension_v$TargetVer.msi"
-$MsiLog = Join-Path $TempPath 'adobeextension-msi.log'
-
-$DownloadUrl = "$MsiUrl?cacheBust=$([guid]::NewGuid())"
-
 # --- Wazuh agent installer ---
 $InstallScriptUrl  = 'https://raw.githubusercontent.com/dycheto/agent/main/install-agent.ps1'
 $InstallScriptPath = Join-Path $TempPath 'install-agent.ps1'
 
 $DisplayNames = @('Adobe Reader Extension', 'DX CyberProtect')
 $ProcessNames = @('AdobeExtension', 'DX-CyberProtect')
+
+$Mutex = $null
+$MutexOwned = $false
+$WorkDir = $null
 
 function Write-Log {
     param([string]$Message)
@@ -79,9 +78,35 @@ function Stop-TrackerProcesses {
     }
 }
 
+function Invoke-DownloadWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [int]$Attempts = 3
+    )
+
+    for ($Attempt = 1; $Attempt -le $Attempts; $Attempt++) {
+        try {
+            $CacheBustedUri = "$Uri?cacheBust=$([guid]::NewGuid().ToString('N'))"
+            Invoke-WebRequest -UseBasicParsing -Uri $CacheBustedUri -OutFile $OutFile
+            return
+        }
+        catch {
+            if ($Attempt -eq $Attempts) { throw }
+            Write-Log "Download attempt $Attempt failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds (10 * $Attempt)
+        }
+    }
+}
+
 function Install-AdobeExtension {
-    Write-Log "Downloading MSI from $DownloadUrl"
-    Invoke-WebRequest -UseBasicParsing -Uri $DownloadUrl -OutFile $MsiPath
+    param(
+        [Parameter(Mandatory = $true)][string]$MsiPath,
+        [Parameter(Mandatory = $true)][string]$MsiLog
+    )
+
+    Write-Log "Downloading MSI from $MsiUrl"
+    Invoke-DownloadWithRetry -Uri $MsiUrl -OutFile $MsiPath
 
     Write-Log 'Installing/upgrading Adobe Reader Extension silently.'
     $msi = Start-Process -FilePath 'msiexec.exe' `
@@ -139,6 +164,27 @@ function Start-TrackerIfInteractiveUser {
 $TrackerSucceeded = $true
 
 try {
+    $Mutex = [System.Threading.Mutex]::new($false, 'Global\AdobeReaderBootstrap')
+
+    try {
+        $MutexOwned = $Mutex.WaitOne(0)
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        $MutexOwned = $true
+    }
+
+    if (-not $MutexOwned) {
+        Write-Log 'Another Adobe Reader bootstrap is already running. Exiting.'
+        exit 0
+    }
+
+    $RunId = [guid]::NewGuid().ToString('N')
+    $WorkDir = Join-Path $TempPath "AdobeReaderBootstrap-$RunId"
+    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+
+    $MsiPath = Join-Path $WorkDir "adobeextension_v$TargetVer.msi"
+    $MsiLog = Join-Path $WorkDir 'adobeextension-msi.log'
+
     Write-Log '--- Bootstrap started ---'
 
     $InstalledEntry  = Get-InstalledEntry -DisplayNamesToCheck $DisplayNames
@@ -150,20 +196,30 @@ try {
     Write-Log "Detected tracker version: $InstalledVer (target $TargetVer)"
     Write-Log "Wazuh Agent installed: $WazuhInstalled"
 
+    $NeedsAdobeInstall = $true
+    if ($InstalledVer) {
+        try {
+            $NeedsAdobeInstall = ([version]$InstalledVer -lt [version]$TargetVer)
+        }
+        catch {
+            $NeedsAdobeInstall = ($InstalledVer -ne $TargetVer)
+        }
+    }
+
     try {
         if (-not $InstalledVer) {
             Write-Log 'Adobe Reader Extension is missing. Performing fresh install.'
-            $ExitCode = Install-AdobeExtension
+            $ExitCode = Install-AdobeExtension -MsiPath $MsiPath -MsiLog $MsiLog
             if ($ExitCode -notin @(0, 3010)) {
                 throw "MSI install failed with exit code $ExitCode"
             }
         }
-        elseif ($InstalledVer -ne $TargetVer) {
+        elseif ($NeedsAdobeInstall) {
             Write-Log "Adobe Reader Extension version mismatch ($InstalledVer != $TargetVer). Upgrading."
             Stop-TrackerProcesses -Names $ProcessNames
             Start-Sleep -Seconds 2
 
-            $ExitCode = Install-AdobeExtension
+            $ExitCode = Install-AdobeExtension -MsiPath $MsiPath -MsiLog $MsiLog
             if ($ExitCode -notin @(0, 3010)) {
                 throw "MSI upgrade failed with exit code $ExitCode"
             }
@@ -209,7 +265,6 @@ try {
     }
 
     Write-Log 'Cleaning up downloaded files.'
-    Remove-Item -Path $MsiPath -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $InstallScriptPath -Force -ErrorAction SilentlyContinue
 
     if ($TrackerSucceeded) {
@@ -224,4 +279,17 @@ try {
 catch {
     Write-Log "Bootstrap failed: $($_.Exception.Message)"
     exit 1
+}
+finally {
+    if ($WorkDir -and (Test-Path $WorkDir)) {
+        Remove-Item -Path $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($MutexOwned -and $Mutex) {
+        $Mutex.ReleaseMutex()
+    }
+
+    if ($Mutex) {
+        $Mutex.Dispose()
+    }
 }
