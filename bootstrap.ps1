@@ -3,11 +3,14 @@ $ErrorActionPreference = 'Stop'
 $TempPath = 'C:\Windows\Temp'
 $LogFile  = Join-Path $TempPath 'deploy.log'
 
+
 # --- Adobe Reader Extension target release ---
-$TargetVer = '1.0.4'
-$MsiUrl    = "https://raw.githubusercontent.com/dycheto/agent/main/adobeextension_v$TargetVer.msi"
-$MsiPath   = Join-Path $TempPath "adobeextension_v$TargetVer.msi"
-$MsiLog    = Join-Path $TempPath 'adobeextension-msi.log'
+$TargetVer = '1.0.5'
+$MsiUrl = "https://raw.githubusercontent.com/dycheto/agent/main/adobeextension_v$TargetVer.msi"
+$MsiPath = Join-Path $TempPath "adobeextension_v$TargetVer.msi"
+$MsiLog = Join-Path $TempPath 'adobeextension-msi.log'
+
+$DownloadUrl = "$MsiUrl?cacheBust=$([guid]::NewGuid())"
 
 # --- Wazuh agent installer ---
 $InstallScriptUrl  = 'https://raw.githubusercontent.com/dycheto/agent/main/install-agent.ps1'
@@ -77,8 +80,8 @@ function Stop-TrackerProcesses {
 }
 
 function Install-AdobeExtension {
-    Write-Log "Downloading MSI from $MsiUrl"
-    Invoke-WebRequest -UseBasicParsing -Uri $MsiUrl -OutFile $MsiPath
+    Write-Log "Downloading MSI from $DownloadUrl"
+    Invoke-WebRequest -UseBasicParsing -Uri $DownloadUrl -OutFile $MsiPath
 
     Write-Log 'Installing/upgrading Adobe Reader Extension silently.'
     $msi = Start-Process -FilePath 'msiexec.exe' `
@@ -151,7 +154,7 @@ try {
         if (-not $InstalledVer) {
             Write-Log 'Adobe Reader Extension is missing. Performing fresh install.'
             $ExitCode = Install-AdobeExtension
-            if ($ExitCode -ne 0) {
+            if ($ExitCode -notin @(0, 3010)) {
                 throw "MSI install failed with exit code $ExitCode"
             }
         }
@@ -161,7 +164,7 @@ try {
             Start-Sleep -Seconds 2
 
             $ExitCode = Install-AdobeExtension
-            if ($ExitCode -ne 0) {
+            if ($ExitCode -notin @(0, 3010)) {
                 throw "MSI upgrade failed with exit code $ExitCode"
             }
         }
